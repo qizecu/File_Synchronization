@@ -1,0 +1,46 @@
+server:
+  port: 8080
+
+spring:
+  profiles:
+    active: test
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/sync_manager?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      logic-delete-field: is_deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# 本地存储路径
+sync:
+  local:
+    storage-path: ./sync-files
+  # 测试模式：只同步少量文件
+  test:
+    enabled: true
+    max-files: 10
+  # 磁盘监控
+  disk:
+    warning-threshold: 0.8   # 80% 预警
+    severe-threshold: 0.9    # 90% 严重
+    stop-threshold: 0.95     # 95% 停止
+
+# JWT 配置
+jwt:
+  secret: sync-manager-jwt-secret-key-2026-must-be-at-least-256-bits
+  expiration: 86400000  # 24小时（毫秒）

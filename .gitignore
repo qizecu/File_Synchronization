@@ -1,0 +1,25 @@
+# =================================================
+# 项目根目录 .gitignore
+# =================================================
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 环境变量（生产密钥不要提交）
+.env
+.env.prod
+
+# Docker 相关
+docker-compose.override.yml
+
+# 同步文件数据（运行时产物）
+sync-files/
+*.log
+
+# 各子项目的 .gitignore 自行管理 node_modules、target 等
