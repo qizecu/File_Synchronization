@@ -9,5 +9,5 @@ public class NotifyConfigCreateDTO {
     private String notifyType;
     private String webhookUrl;
     private String secret;
-    private Integer enabled;
+    private Boolean enabled;
 }

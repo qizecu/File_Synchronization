@@ -22,18 +22,22 @@ public class DataInitializer implements CommandLineRunner {
 
     @Override
     public void run(String... args) {
-        Long count = sysUserMapper.selectCount(
-                new LambdaQueryWrapper<SysUser>().eq(SysUser::getUsername, "admin")
-        );
-        if (count == 0) {
-            SysUser admin = new SysUser();
-            admin.setUsername("admin");
-            admin.setPassword(passwordEncoder.encode("admin123"));
-            admin.setNickname("管理员");
-            admin.setStatus(1);
-            admin.setRole("ADMIN"); // 默认管理员角色为 ADMIN
-            sysUserMapper.insert(admin);
-            log.info("默认管理员账号已创建: admin / admin123");
+        try {
+            Long count = sysUserMapper.selectCount(
+                    new LambdaQueryWrapper<SysUser>().eq(SysUser::getUsername, "admin")
+            );
+            if (count == 0) {
+                SysUser admin = new SysUser();
+                admin.setUsername("admin");
+                admin.setPassword(passwordEncoder.encode("admin123"));
+                admin.setNickname("管理员");
+                admin.setStatus(1);
+                admin.setRole("ADMIN"); // 默认管理员角色为 ADMIN
+                sysUserMapper.insert(admin);
+                log.info("默认管理员账号已创建: admin / admin123");
+            }
+        } catch (Exception e) {
+            log.warn("管理员账号初始化跳过（可能表尚未创建）: {}，将使用 Docker schema.sql 中的默认管理员", e.getMessage());
         }
     }
 }

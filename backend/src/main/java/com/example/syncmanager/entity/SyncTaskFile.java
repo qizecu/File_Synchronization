@@ -42,6 +42,12 @@ public class SyncTaskFile {
     /** 错误信息 */
     private String errorMsg;
 
+    /** 操作用户ID */
+    private Long userId;
+
+    /** 来源: SYNC / UPLOAD */
+    private String fileOrigin;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

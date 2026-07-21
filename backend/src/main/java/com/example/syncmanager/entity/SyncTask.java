@@ -25,16 +25,16 @@ public class SyncTask {
     private String status;
 
     /** 总文件数 */
-    private Integer totalFiles;
+    private Integer totalFiles = 0;
 
     /** 成功文件数 */
-    private Integer successFiles;
+    private Integer successFiles = 0;
 
     /** 失败文件数 */
-    private Integer failedFiles;
+    private Integer failedFiles = 0;
 
     /** 跳过文件数 */
-    private Integer skippedFiles;
+    private Integer skippedFiles = 0;
 
     /** 断点续传游标 */
     private String currentCursor;

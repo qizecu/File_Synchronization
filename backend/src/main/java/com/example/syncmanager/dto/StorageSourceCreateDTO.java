@@ -28,5 +28,5 @@ public class StorageSourceCreateDTO {
 
     private String prefixPath;
 
-    private Integer enabled;
+    private Boolean enabled;
 }

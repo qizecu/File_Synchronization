@@ -28,7 +28,7 @@ public class SyncScheduler {
         List<StorageSource> sources = sourceMapper.selectList(null);
 
         for (StorageSource source : sources) {
-            if (source.getEnabled() != 1) {
+            if (!source.getEnabled()) {
                 log.info("存储源已禁用，跳过: {}", source.getSourceName());
                 continue;
             }

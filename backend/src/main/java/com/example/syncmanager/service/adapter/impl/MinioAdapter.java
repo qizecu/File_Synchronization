@@ -7,6 +7,7 @@ import io.minio.*;
 import io.minio.messages.Item;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.File;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
@@ -23,17 +24,28 @@ public class MinioAdapter implements StorageAdapter {
         this.client = MinioClient.builder()
                 .endpoint(endpoint)
                 .credentials(accessKey, secretKey)
+                .region("us-east-1")  // 强制 path-style 访问（如果不设 region，SDK 默认 virtual-host-style）
                 .build();
     }
 
     @Override
     public boolean testConnection() {
         try {
-            // 调用一个轻量操作验证连通性
             client.listBuckets();
             return true;
         } catch (Exception e) {
-            log.error("MinIO 连接测试失败: {}", e.getMessage());
+            String msg = e.getMessage();
+            // MinIO SDK 已知兼容性问题：部分服务端版本返回的 Bucket 列表缺少 Owner 元素，
+            // 导致 XML 解析报错，但服务器已正常响应，连接实际上是通的
+            if (msg != null && (msg.contains("Owner") || msg.contains("ValueRequiredException"))) {
+                log.info("MinIO 连接成功（listBuckets XML 兼容性警告，不影响连接）");
+                return true;
+            }
+            if (msg != null && msg.contains("API port")) {
+                log.error("MinIO 连接测试失败 — 端点地址可能填了控制台端口，请改用 S3 API 端口");
+            } else {
+                log.error("MinIO 连接测试失败: {}", msg);
+            }
             return false;
         }
     }
@@ -98,6 +110,12 @@ public class MinioAdapter implements StorageAdapter {
     @Override
     public void downloadFile(String bucket, String path, String localPath) {
         try {
+            // 确保目标目录存在（包括所有父目录）
+            File targetFile = new File(localPath);
+            File parentDir = targetFile.getParentFile();
+            if (parentDir != null && !parentDir.exists()) {
+                parentDir.mkdirs();
+            }
             client.downloadObject(
                     DownloadObjectArgs.builder()
                             .bucket(bucket)

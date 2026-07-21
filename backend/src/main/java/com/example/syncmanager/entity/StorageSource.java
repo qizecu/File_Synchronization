@@ -37,7 +37,7 @@ public class StorageSource {
     private String prefixPath;
 
     /** 是否启用 */
-    private Integer enabled;
+    private Boolean enabled;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;

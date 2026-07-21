@@ -2,6 +2,7 @@ package com.example.syncmanager.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.example.syncmanager.common.BusinessException;
+import com.example.syncmanager.common.ErrorMsgTranslator;
 import com.example.syncmanager.entity.*;
 import com.example.syncmanager.mapper.*;
 import com.example.syncmanager.service.adapter.FileInfo;
@@ -10,10 +11,10 @@ import com.example.syncmanager.service.adapter.StorageAdapterFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.io.*;
-import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -32,11 +33,12 @@ public class SyncOrchestrator {
     private final NotifyService notifyService;
     private final DistributedLockService lockService;
     private final SyncStatusCacheService statusCache;
+    private final FileRecordService fileRecordService;
 
     /** 分布式锁最大等待时间（秒） */
     private static final long LOCK_WAIT_SECONDS = 2;
     /** 分布式锁持有时间（秒，需要大于最长同步时间） */
-    private static final long LOCK_LEASE_SECONDS = 3600;
+    private static final long LOCK_LEASE_SECONDS = 600;
 
     @Value("${sync.local.storage-path}")
     private String localStoragePath;
@@ -56,36 +58,34 @@ public class SyncOrchestrator {
 
     /** 每次从存储端拉取文件的批次大小 */
     private static final int BATCH_SIZE = 50;
-    /** MD5 校验不一致时最大重试次数 */
-    private static final int MAX_RETRY = 3;
 
     // ========================= 对外入口 =========================
 
-    /** 全量同步（支持断点续传 + 分布式锁防重） */
-    public void executeFullSync(Long sourceId) {
-        StorageSource source = getEnabledSource(sourceId);
-        if (!lockService.tryLock(sourceId, LOCK_WAIT_SECONDS, LOCK_LEASE_SECONDS)) {
-            throw new BusinessException("该存储源正在同步中，请稍后再试");
-        }
-        try {
-            doSync(source, "FULL", null);
-        } finally {
-            lockService.unlock(sourceId);
-        }
+    /** 全量同步（自动触发，不限用户） */
+    public Long executeFullSync(Long sourceId) {
+        return executeFullSync(sourceId, null);
     }
 
-    /** 增量同步（分布式锁防重） */
-    public void executeIncrementalSync(Long sourceId) {
+    /** 全量同步（手动触发，记录操作者） */
+    public Long executeFullSync(Long sourceId, Long userId) {
         StorageSource source = getEnabledSource(sourceId);
-        if (!lockService.tryLock(sourceId, LOCK_WAIT_SECONDS, LOCK_LEASE_SECONDS)) {
-            throw new BusinessException("该存储源正在同步中，请稍后再试");
-        }
-        try {
-            SyncTask lastTask = findLastSuccessTask(sourceId);
-            doSync(source, "INCREMENTAL", lastTask);
-        } finally {
-            lockService.unlock(sourceId);
-        }
+        SyncTask task = createTaskRecord(source, "FULL");
+        runAsync(task, source, "FULL", null, userId);
+        return task.getId();
+    }
+
+    /** 增量同步（自动触发，不限用户） */
+    public Long executeIncrementalSync(Long sourceId) {
+        return executeIncrementalSync(sourceId, null);
+    }
+
+    /** 增量同步（手动触发，记录操作者） */
+    public Long executeIncrementalSync(Long sourceId, Long userId) {
+        StorageSource source = getEnabledSource(sourceId);
+        SyncTask lastTask = findLastSuccessTask(sourceId);
+        SyncTask task = createTaskRecord(source, "INCREMENTAL");
+        runAsync(task, source, "INCREMENTAL", lastTask, userId);
+        return task.getId();
     }
 
     /** 重试单个失败文件 */
@@ -104,7 +104,7 @@ public class SyncOrchestrator {
         }
 
         StorageSource source = sourceMapper.selectById(task.getSourceId());
-        if (source == null || source.getEnabled() != 1) {
+        if (source == null || !Boolean.TRUE.equals(source.getEnabled())) {
             throw new BusinessException("存储源不存在或已禁用");
         }
 
@@ -121,15 +121,37 @@ public class SyncOrchestrator {
         return ok;
     }
 
+    // ========================= 异步执行 =========================
+
+    /** 异步执行同步流程（加锁 → 同步 → 解锁） */
+    @Async("syncExecutor")
+    public void runAsync(SyncTask task, StorageSource source, String taskType, SyncTask lastTask, Long userId) {
+        if (!lockService.tryLock(source.getId(), LOCK_WAIT_SECONDS, LOCK_LEASE_SECONDS)) {
+            abortTask(task, "该存储源正在同步中，请稍后再试");
+            notify(task);
+            return;
+        }
+        try {
+            doSync(task, source, taskType, lastTask, userId);
+        } catch (Exception e) {
+            log.error("{}同步异常: sourceId={}", taskType, source.getId(), e);
+            abortTask(task, ErrorMsgTranslator.translate(e));
+            notify(task);
+        } finally {
+            lockService.unlock(source.getId());
+        }
+    }
+
     // ========================= 核心流程 =========================
 
     /**
+     * @param task     已创建的任务记录（状态 RUNNING）
      * @param source   存储源
      * @param taskType FULL / INCREMENTAL
      * @param lastTask 上一次成功的同步任务（增量模式传入，全量模式传 null）
+     * @param userId   手动触发时传入操作者ID，自动触发时为 null
      */
-    private void doSync(StorageSource source, String taskType, SyncTask lastTask) {
-        SyncTask task = createTaskRecord(source, taskType);
+    private void doSync(SyncTask task, StorageSource source, String taskType, SyncTask lastTask, Long userId) {
         StorageAdapter adapter = StorageAdapterFactory.getOrCreate(source);
         int maxFiles = testMode ? testMaxFiles : Integer.MAX_VALUE;
 
@@ -164,7 +186,16 @@ public class SyncOrchestrator {
                     continue;
                 }
 
-                SyncTaskFile taskFile = createFileRecord(task.getId(), fi);
+                // 去重：同一 source_path 已有 SUCCESS 记录则跳过
+                if (fileRecordService.existsBySourcePath(fi.getPath())) {
+                    log.info("文件已存在，跳过: {}", fi.getPath());
+                    task.setSkippedFiles(task.getSkippedFiles() + 1);
+                    syncedCount++;
+                    cursor = fi.getPath();
+                    continue;
+                }
+
+                SyncTaskFile taskFile = createFileRecord(task.getId(), fi, userId);
                 boolean ok = syncSingleFile(task, taskFile, adapter, source);
                 updateFileRecord(taskFile, ok);
 
@@ -178,7 +209,8 @@ public class SyncOrchestrator {
                 cursor = fi.getPath(); // 更新游标
             }
 
-            // 每批处理完持久化进度
+            // 每批处理完持久化进度（实时更新 totalFiles 以便前端显示进度条）
+            task.setTotalFiles(syncedCount + nullToZero(task.getSkippedFiles()));
             task.setCurrentCursor(cursor);
             taskMapper.updateById(task);
         }
@@ -189,9 +221,9 @@ public class SyncOrchestrator {
                 task.getId(), task.getSuccessFiles(), task.getFailedFiles(), task.getSkippedFiles());
     }
 
-    // ========================= 文件同步 + MD5 校验 =========================
+    // ========================= 文件同步 =========================
 
-    /** @return true-成功, false-失败（已重试上限） */
+    /** @return true-成功, false-失败 */
     private boolean syncSingleFile(SyncTask task, SyncTaskFile taskFile,
                                    StorageAdapter adapter, StorageSource source) {
         String bucket = source.getBucket();
@@ -199,36 +231,15 @@ public class SyncOrchestrator {
         String targetPath = buildLocalPath(taskFile.getSourcePath());
         taskFile.setTargetPath(targetPath);
 
-        for (int retry = 0; retry <= MAX_RETRY; retry++) {
-            try {
-                adapter.downloadFile(bucket, sourcePath, targetPath);
-                taskFile.setRetryCount(retry);
-
-                // 计算本地 MD5 并比对
-                String localMd5 = calculateMd5(targetPath);
-                taskFile.setTargetMd5(localMd5);
-                taskFile.setTargetSize(new File(targetPath).length());
-
-                // 获取源端最新的 MD5（下载后可能变化？不会，但做一次校验）
-                FileInfo sourceInfo = adapter.getFileInfo(bucket, sourcePath);
-                String sourceMd5 = sourceInfo != null ? sourceInfo.getMd5() : taskFile.getSourceMd5();
-
-                // MD5 比对：注意部分对象存储 ETag 不一定是 MD5，用大小兜底
-                if (localMd5 != null && localMd5.equals(sourceMd5)) {
-                    return true;
-                }
-                // MD5 不一致，删除本地文件准备重试
-                new File(targetPath).delete();
-                log.warn("MD5 校验不一致(第{}次重试): path={}, sourceMd5={}, localMd5={}",
-                        retry, sourcePath, sourceMd5, localMd5);
-
-            } catch (Exception e) {
-                log.error("文件同步异常(第{}次重试): path={}, error={}", retry, sourcePath, e.getMessage());
-            }
+        try {
+            adapter.downloadFile(bucket, sourcePath, targetPath);
+            taskFile.setTargetSize(new File(targetPath).length());
+            return true;
+        } catch (Exception e) {
+            log.error("文件同步异常: path={}, error={}", sourcePath, e.getMessage());
+            taskFile.setErrorMsg(ErrorMsgTranslator.translate(e));
+            return false;
         }
-
-        taskFile.setErrorMsg("MD5 校验失败，已重试 " + MAX_RETRY + " 次");
-        return false;
     }
 
     /** 增量过滤：文件最后修改时间 ≤ 上次同步时间则跳过 */
@@ -266,27 +277,6 @@ public class SyncOrchestrator {
         return "OK";
     }
 
-    // ========================= MD5 计算 =========================
-
-    private String calculateMd5(String filePath) {
-        try (InputStream is = new BufferedInputStream(new FileInputStream(filePath))) {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] buf = new byte[8192];
-            int len;
-            while ((len = is.read(buf)) != -1) {
-                md.update(buf, 0, len);
-            }
-            StringBuilder sb = new StringBuilder();
-            for (byte b : md.digest()) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            log.error("MD5 计算失败: {}", filePath, e);
-            return null;
-        }
-    }
-
     // ========================= 通知（钉钉 / 企微 webhook） =========================
 
     private void notify(SyncTask task) {
@@ -304,17 +294,21 @@ public class SyncOrchestrator {
         return String.format("文件同步%s\n任务: %s\n总数: %d | 成功: %d | 失败: %d | 跳过: %d",
                 "SUCCESS".equals(task.getStatus()) ? "完成" : "异常终止",
                 task.getTaskName(),
-                task.getTotalFiles(),
-                task.getSuccessFiles(),
-                task.getFailedFiles(),
-                task.getSkippedFiles());
+                nullToZero(task.getTotalFiles()),
+                nullToZero(task.getSuccessFiles()),
+                nullToZero(task.getFailedFiles()),
+                nullToZero(task.getSkippedFiles()));
+    }
+
+    private static int nullToZero(Integer v) {
+        return v == null ? 0 : v;
     }
 
     // ========================= 辅助方法 =========================
 
     private StorageSource getEnabledSource(Long sourceId) {
         StorageSource source = sourceMapper.selectById(sourceId);
-        if (source == null || source.getEnabled() != 1) {
+        if (source == null || !Boolean.TRUE.equals(source.getEnabled())) {
             throw new BusinessException("存储源不存在或已禁用: " + sourceId);
         }
         return source;
@@ -349,6 +343,10 @@ public class SyncOrchestrator {
         task.setTaskType(taskType);
         task.setSourceId(source.getId());
         task.setStatus("RUNNING");
+        task.setTotalFiles(0);
+        task.setSuccessFiles(0);
+        task.setFailedFiles(0);
+        task.setSkippedFiles(0);
         task.setStartedAt(LocalDateTime.now());
         taskMapper.insert(task);
         // 缓存运行状态
@@ -357,13 +355,15 @@ public class SyncOrchestrator {
     }
 
     /** 创建文件同步明细 */
-    private SyncTaskFile createFileRecord(Long taskId, FileInfo fi) {
+    private SyncTaskFile createFileRecord(Long taskId, FileInfo fi, Long userId) {
         SyncTaskFile tf = new SyncTaskFile();
         tf.setTaskId(taskId);
         tf.setSourcePath(fi.getPath());
         tf.setSourceMd5(fi.getMd5());
         tf.setSourceSize(fi.getSize());
         tf.setFileStatus("PENDING");
+        tf.setFileOrigin("SYNC");
+        tf.setUserId(userId);
         taskFileMapper.insert(tf);
         return tf;
     }
@@ -374,7 +374,7 @@ public class SyncOrchestrator {
         taskFileMapper.updateById(tf);
     }
 
-    /** 构建本地存储路径：localBase/sourceKey */
+    /** 构建本地存储路径：STORAGE_PATH + "/" + objectName */
     private String buildLocalPath(String sourceKey) {
         return localStoragePath + File.separator + sourceKey;
     }
@@ -391,7 +391,7 @@ public class SyncOrchestrator {
     /** 正常结束任务 */
     private void finishTask(SyncTask task, int total) {
         task.setTotalFiles(total);
-        task.setStatus(task.getFailedFiles() > 0 ? "PARTIAL" : "SUCCESS");
+        task.setStatus(nullToZero(task.getFailedFiles()) > 0 ? "PARTIAL" : "SUCCESS");
         task.setCompletedAt(LocalDateTime.now());
         task.setCurrentCursor(null);
         taskMapper.updateById(task);

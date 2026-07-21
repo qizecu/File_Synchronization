@@ -1,19 +1,29 @@
 package com.example.syncmanager.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.syncmanager.common.BusinessException;
 import com.example.syncmanager.common.Result;
 import com.example.syncmanager.dto.SyncTaskFileQueryDTO;
 import com.example.syncmanager.dto.SyncTaskQueryDTO;
+import com.example.syncmanager.dto.SyncTaskVO;
 import com.example.syncmanager.entity.SyncTask;
 import com.example.syncmanager.entity.SyncTaskFile;
+import com.example.syncmanager.entity.SysUser;
 import com.example.syncmanager.mapper.SyncTaskFileMapper;
 import com.example.syncmanager.mapper.SyncTaskMapper;
+import com.example.syncmanager.mapper.SysUserMapper;
 import com.example.syncmanager.service.SyncOrchestrator;
 import com.example.syncmanager.service.SyncStatusCacheService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
+@Slf4j
 @RestController
 @RequestMapping("/api/sync-tasks")
 @RequiredArgsConstructor
@@ -21,18 +31,18 @@ public class SyncTaskController {
 
     private final SyncTaskMapper taskMapper;
     private final SyncTaskFileMapper taskFileMapper;
+    private final SysUserMapper sysUserMapper;
     private final SyncOrchestrator orchestrator;
     private final SyncStatusCacheService statusCacheService;
 
     /** 任务列表（分页） */
     @GetMapping
-    public Result<Page<SyncTask>> list(SyncTaskQueryDTO query) {
+    public Result<IPage<SyncTaskVO>> list(SyncTaskQueryDTO query) {
         LambdaQueryWrapper<SyncTask> wrapper = new LambdaQueryWrapper<SyncTask>()
                 .eq(query.getTaskType() != null, SyncTask::getTaskType, query.getTaskType())
                 .eq(query.getStatus() != null, SyncTask::getStatus, query.getStatus())
-                .eq(query.getSourceId() != null, SyncTask::getSourceId, query.getSourceId())
-                .orderByDesc(SyncTask::getCreatedAt);
-        Page<SyncTask> page = taskMapper.selectPage(
+                .eq(query.getSourceId() != null, SyncTask::getSourceId, query.getSourceId());
+        IPage<SyncTaskVO> page = taskMapper.selectTaskVOPage(
                 new Page<>(query.getPage(), query.getSize()), wrapper);
         return Result.success(page);
     }
@@ -54,18 +64,20 @@ public class SyncTaskController {
                 new Page<>(query.getPage(), query.getSize()), wrapper));
     }
 
-    /** 触发全量同步 */
+    /** 触发全量同步（异步执行，立即返回任务ID） */
     @PostMapping("/trigger/full/{sourceId}")
-    public Result<Void> triggerFull(@PathVariable Long sourceId) {
-        orchestrator.executeFullSync(sourceId);
-        return Result.success();
+    public Result<Map<String, Object>> triggerFull(@PathVariable Long sourceId) {
+        Long taskId = orchestrator.executeFullSync(sourceId, getCurrentUser().getId());
+        log.info("全量同步已触发: sourceId={}, taskId={}", sourceId, taskId);
+        return Result.success(Map.of("taskId", taskId));
     }
 
-    /** 触发增量同步 */
+    /** 触发增量同步（异步执行，立即返回任务ID） */
     @PostMapping("/trigger/incremental/{sourceId}")
-    public Result<Void> triggerIncremental(@PathVariable Long sourceId) {
-        orchestrator.executeIncrementalSync(sourceId);
-        return Result.success();
+    public Result<Map<String, Object>> triggerIncremental(@PathVariable Long sourceId) {
+        Long taskId = orchestrator.executeIncrementalSync(sourceId, getCurrentUser().getId());
+        log.info("增量同步已触发: sourceId={}, taskId={}", sourceId, taskId);
+        return Result.success(Map.of("taskId", taskId));
     }
 
     /** 重试失败文件 */
@@ -84,5 +96,17 @@ public class SyncTaskController {
         }
         SyncTask task = taskMapper.selectById(id);
         return Result.success(task != null ? task.getStatus() : null);
+    }
+
+    /** 从 SecurityContext 获取当前用户 */
+    private SysUser getCurrentUser() {
+        String username = SecurityContextHolder.getContext().getAuthentication().getName();
+        SysUser user = sysUserMapper.selectOne(
+                new LambdaQueryWrapper<SysUser>().eq(SysUser::getUsername, username)
+        );
+        if (user == null) {
+            throw new BusinessException("无法识别当前用户");
+        }
+        return user;
     }
 }

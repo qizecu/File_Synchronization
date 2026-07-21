@@ -59,7 +59,7 @@ CREATE TABLE sync_task (
 -- ============================================
 CREATE TABLE sync_task_file (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
-    task_id         BIGINT       NOT NULL COMMENT '关联同步任务ID',
+    task_id         BIGINT       DEFAULT NULL COMMENT '关联同步任务ID（上传记录为NULL）',
     source_path     VARCHAR(512) NOT NULL COMMENT '源端文件路径',
     source_md5      VARCHAR(64)  DEFAULT NULL COMMENT '源端文件 MD5',
     source_size     BIGINT       DEFAULT 0 COMMENT '源端文件大小（字节）',
@@ -69,11 +69,15 @@ CREATE TABLE sync_task_file (
     file_status     VARCHAR(16)  NOT NULL DEFAULT 'PENDING' COMMENT '文件状态: PENDING / SUCCESS / FAILED / SKIPPED',
     retry_count     INT          NOT NULL DEFAULT 0 COMMENT '已重试次数',
     error_msg       TEXT         DEFAULT NULL COMMENT '错误信息',
+    user_id         BIGINT       DEFAULT NULL COMMENT '操作用户ID',
+    file_origin     VARCHAR(16)  DEFAULT 'SYNC' COMMENT '来源: SYNC/UPLOAD',
     created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     is_deleted      TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '软删除',
     INDEX idx_task_id (task_id),
-    INDEX idx_file_status (file_status)
+    INDEX idx_file_status (file_status),
+    INDEX idx_user_id (user_id),
+    INDEX idx_file_origin (file_origin)
 ) ENGINE=InnoDB COMMENT='同步任务文件明细表';
 
 -- ============================================
@@ -107,6 +111,22 @@ CREATE TABLE notify_log (
     is_deleted       TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '软删除',
     INDEX idx_task_id (task_id)
 ) ENGINE=InnoDB COMMENT='通知日志表';
+
+-- ============================================
+-- 6. 系统用户表
+-- ============================================
+CREATE TABLE IF NOT EXISTS sys_user (
+    id          BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    username    VARCHAR(50)  NOT NULL COMMENT '用户名',
+    password    VARCHAR(200) NOT NULL COMMENT '密码（BCrypt 加密）',
+    nickname    VARCHAR(50)  DEFAULT NULL COMMENT '昵称',
+    status      TINYINT      DEFAULT 1  COMMENT '状态：1-启用 0-禁用',
+    role        VARCHAR(20)  NOT NULL DEFAULT 'USER' COMMENT '角色：ADMIN-管理员 USER-普通用户',
+    created_at  DATETIME     DEFAULT NULL COMMENT '创建时间',
+    updated_at  DATETIME     DEFAULT NULL COMMENT '更新时间',
+    is_deleted  TINYINT      DEFAULT 0  COMMENT '软删除标记',
+    UNIQUE KEY uk_username (username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统用户表';
 
 -- ============================================
 -- 初始化测试数据

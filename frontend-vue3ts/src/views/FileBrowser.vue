@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Search, Refresh, Upload, Download, FolderOpened, ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
-import { browseFiles, downloadBatch, uploadFiles, getDownloadUrl, getPreviewUrl } from '@/api/file'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Search, Refresh, Upload, Download, FolderOpened, ArrowLeft, ArrowRight, Share, Setting } from '@element-plus/icons-vue'
+import { browseFiles, downloadBatch, uploadFiles, getDownloadUrl, getPreviewUrl, grantAccess, revokeAccess, listAllGrants } from '@/api/file'
+import { getUserList } from '@/api/user'
 import { useUserStore } from '@/stores/user'
-import type { FileBrowseVO } from '@/types/api'
+import type { FileBrowseVO, SysUserVO, UserFileAccessVO } from '@/types/api'
 
 // ==================== 状态 ====================
 
@@ -28,6 +29,17 @@ const previewCurrentUrl = ref('')
 const previewCurrentName = ref('')
 const previewImages = ref<FileBrowseVO[]>([])
 const previewIndex = ref(0)
+
+// 分配权限相关（仅管理员）
+const grantDialogVisible = ref(false)
+const grantTargetUser = ref<number | null>(null)
+const userOptions = ref<SysUserVO[]>([])
+const grantLoading = ref(false)
+
+// 分配管理弹窗
+const grantManageVisible = ref(false)
+const grantManageLoading = ref(false)
+const grantList = ref<UserFileAccessVO[]>([])
 
 // ==================== 面包屑 ====================
 
@@ -168,7 +180,9 @@ async function startUpload() {
   }
   uploading.value = true
   try {
-    await uploadFiles(currentPath.value, pendingFiles.value)
+    // 管理员：上传到当前浏览目录；普通用户：后端自动分配到自己的目录
+    const dir = userStore.isAdmin ? currentPath.value : ''
+    await uploadFiles(dir, pendingFiles.value)
     ElMessage.success(`成功上传 ${pendingFiles.value.length} 个文件`)
     uploadDialogVisible.value = false
     pendingFiles.value = []
@@ -181,6 +195,69 @@ async function startUpload() {
 function openUploadDialog() {
   pendingFiles.value = []
   uploadDialogVisible.value = true
+}
+
+// ==================== 权限分配（管理员） ====================
+
+async function openGrantDialog() {
+  if (selectedRows.value.length === 0) {
+    ElMessage.warning('请先选择要分配的文件或目录')
+    return
+  }
+  // 加载用户列表（排除 admin）
+  try {
+    const res = await getUserList({ page: 1, size: 200 })
+    userOptions.value = res.records.filter((u) => u.role === 'USER')
+  } catch {
+    userOptions.value = []
+  }
+  grantTargetUser.value = null
+  grantDialogVisible.value = true
+}
+
+async function handleGrant() {
+  if (!grantTargetUser.value) {
+    ElMessage.warning('请选择目标用户')
+    return
+  }
+  grantLoading.value = true
+  try {
+    for (const row of selectedRows.value) {
+      await grantAccess({ userId: grantTargetUser.value, filePath: row.path })
+    }
+    ElMessage.success(`已成功将 ${selectedRows.value.length} 个文件/目录授权给用户`)
+    grantDialogVisible.value = false
+    selectedRows.value = []
+  } catch {
+    // 错误已在拦截器提示
+  } finally {
+    grantLoading.value = false
+  }
+}
+
+async function openGrantManageDialog() {
+  grantManageVisible.value = true
+  grantManageLoading.value = true
+  try {
+    grantList.value = await listAllGrants()
+  } finally {
+    grantManageLoading.value = false
+  }
+}
+
+async function handleRevoke(access: UserFileAccessVO) {
+  try {
+    await ElMessageBox.confirm(
+      `确认撤销用户 "${access.username}" 对 "${access.filePath}" 的访问权限？`,
+      '撤销授权',
+      { type: 'warning' }
+    )
+    await revokeAccess(access.id)
+    ElMessage.success('已撤销授权')
+    grantList.value = grantList.value.filter((g) => g.id !== access.id)
+  } catch {
+    // 取消
+  }
 }
 
 // ==================== 表格选择（el-table 的 selection-change 回调参数类型为 any[]） ====================
@@ -236,7 +313,7 @@ function formatSize(bytes: number): string {
           style="width: 220px"
         />
         <el-button :icon="Refresh" @click="loadFiles">刷新</el-button>
-        <!-- 仅管理员显示下载按钮 -->
+        <!-- 仅管理员显示下载和分配按钮 -->
         <template v-if="userStore.isAdmin">
           <el-button
             type="warning"
@@ -247,6 +324,15 @@ function formatSize(bytes: number): string {
           >
             批量下载 {{ selectableFiles.length > 0 ? `(${selectableFiles.length})` : '' }}
           </el-button>
+          <el-button
+            type="success"
+            :icon="Share"
+            :disabled="selectedRows.length === 0"
+            @click="openGrantDialog"
+          >
+            分配 {{ selectedRows.length > 0 ? `(${selectedRows.length})` : '' }}
+          </el-button>
+          <el-button :icon="Setting" @click="openGrantManageDialog">分配管理</el-button>
         </template>
         <el-button type="primary" :icon="Upload" @click="openUploadDialog">
           上传文件
@@ -265,7 +351,7 @@ function formatSize(bytes: number): string {
       @row-dblclick="enterDir"
       @selection-change="handleSelectionChange"
     >
-      <el-table-column type="selection" width="50" :selectable="(row: any) => !row.isDirectory" />
+      <el-table-column type="selection" width="50" />
       <el-table-column label="文件名" min-width="280">
         <template #default="{ row }">
           <div class="file-name-cell" :class="{ 'is-dir': row.isDirectory }">
@@ -368,6 +454,55 @@ function formatSize(bytes: number): string {
       <div class="preview-info">
         {{ previewIndex + 1 }} / {{ previewImages.length }}
       </div>
+    </el-dialog>
+
+    <!-- 分配权限弹窗（管理员） -->
+    <el-dialog v-model="grantDialogVisible" title="分配文件/目录权限" width="480px" :close-on-click-modal="false">
+      <p style="margin-bottom: 16px; color: #606266;">
+        将以下 {{ selectedRows.length }} 个文件/目录授权给指定用户：
+      </p>
+      <div class="grant-file-list">
+        <el-tag
+          v-for="row in selectedRows"
+          :key="row.path"
+          :type="row.isDirectory ? 'warning' : 'info'"
+          size="small"
+          style="margin: 0 4px 4px 0"
+        >
+          {{ row.isDirectory ? '[目录]' : '' }}{{ row.name }}
+        </el-tag>
+      </div>
+      <el-form style="margin-top: 16px;">
+        <el-form-item label="目标用户">
+          <el-select v-model="grantTargetUser" placeholder="请选择用户" style="width: 100%">
+            <el-option
+              v-for="user in userOptions"
+              :key="user.id"
+              :label="`${user.username} (${user.nickname})`"
+              :value="user.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="grantDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="grantLoading" @click="handleGrant">确认分配</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 分配管理弹窗（管理员） -->
+    <el-dialog v-model="grantManageVisible" title="文件权限分配管理" width="800px" :close-on-click-modal="false">
+      <el-table :data="grantList" v-loading="grantManageLoading" max-height="400" stripe>
+        <el-table-column prop="username" label="用户" width="120" />
+        <el-table-column prop="filePath" label="文件/目录路径" min-width="280" show-overflow-tooltip />
+        <el-table-column prop="createdAt" label="授权时间" width="180" />
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button type="danger" text size="small" @click="handleRevoke(row)">撤销</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!grantManageLoading && grantList.length === 0" description="暂无授权记录" />
     </el-dialog>
   </div>
 </template>

@@ -3,3 +3,11 @@ sync:
   test:
     enabled: true
     max-files: 10
+
+# 本地开发时自动建表（使用 CREATE TABLE IF NOT EXISTS，不会破坏已有数据）
+spring:
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+      continue-on-error: true

@@ -66,6 +66,7 @@ export interface StorageSourceUpdateDTO {
 export interface SyncTask {
   id: number
   taskName: string
+  sourceName: string
   taskType: 'FULL' | 'INCREMENTAL'
   sourceId: number
   status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'PARTIAL'
@@ -191,4 +192,55 @@ export interface UserUpdateDTO {
   nickname?: string
   role?: string
   status?: number
+}
+
+/** 重置密码参数 */
+export interface ResetPasswordDTO {
+  newPassword: string
+}
+
+/** 修改密码参数 */
+export interface ChangePasswordDTO {
+  oldPassword: string
+  newPassword: string
+}
+
+/** 文件授权请求 */
+export interface GrantAccessDTO {
+  userId: number
+  filePath: string
+}
+
+/** 文件授权记录 */
+export interface UserFileAccessVO {
+  id: number
+  userId: number
+  username: string
+  filePath: string
+  grantedBy: number | null
+  createdAt: string
+}
+
+/** 文件记录视图 */
+export interface FileRecordVO {
+  id: number
+  fileName: string
+  fileOrigin: 'SYNC' | 'UPLOAD'
+  userId: number | null
+  userNickname: string | null
+  sourceName: string | null
+  fileSize: number | null
+  fileStatus: 'PENDING' | 'SUCCESS' | 'FAILED' | 'SKIPPED'
+  errorMsg: string | null
+  createdAt: string
+}
+
+/** 文件记录查询参数 */
+export interface FileRecordQuery {
+  page?: number
+  size?: number
+  type?: 'SYNC' | 'UPLOAD' | 'ALL'
+  userId?: number
+  status?: 'PENDING' | 'SUCCESS' | 'FAILED'
+  fileName?: string
 }

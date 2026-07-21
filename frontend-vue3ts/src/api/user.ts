@@ -22,6 +22,6 @@ export function deleteUser(id: number): Promise<void> {
 }
 
 /** 重置密码 */
-export function resetUserPassword(id: number): Promise<void> {
-  return put<void>(`/users/${id}/reset-password`)
+export function resetUserPassword(id: number, data: ResetPasswordDTO): Promise<void> {
+  return put<void>(`/users/${id}/reset-password`, data)
 }

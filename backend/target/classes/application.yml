@@ -6,7 +6,7 @@ spring:
     active: test
 
   datasource:
-    url: jdbc:mysql://localhost:3306/sync_manager?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    url: jdbc:mysql://localhost:3306/sync_manager?useUnicode=true&characterEncoding=UTF-8&connectionCollation=utf8mb4_unicode_ci&serverTimezone=Asia/Shanghai
     username: root
     password: root
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -29,7 +29,7 @@ mybatis-plus:
 # 本地存储路径
 sync:
   local:
-    storage-path: ./sync-files
+    storage-path: ${STORAGE_PATH:/home/xxb/sync-files}
   # 测试模式：只同步少量文件
   test:
     enabled: true

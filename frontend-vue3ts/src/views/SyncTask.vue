@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   listSyncTasks,
@@ -9,6 +9,7 @@ import {
   triggerIncrementalSync,
 } from '@/api/syncTask'
 import { listStorageSources } from '@/api/storageSource'
+import { deleteAllLocks } from '@/api/redisLock'
 import type { SyncTask, SyncTaskFile, SyncTaskQuery, StorageSource } from '@/types/api'
 
 const loading = ref(false)
@@ -37,6 +38,10 @@ const fileQuery = reactive({ page: 1, size: 10, fileStatus: '' })
 const triggerLoading = ref<{ full: boolean; incremental: boolean }>({ full: false, incremental: false })
 const triggerDialogVisible = ref(false)
 const selectedSourceId = ref<number>()
+
+// 轮询：触发同步后定时刷新进度
+const pollingTimer = ref<ReturnType<typeof setInterval> | null>(null)
+const pollingTaskId = ref<number | null>(null)
 
 /** 获取存储源来源名称 */
 function sourceName(id: number): string {
@@ -76,12 +81,12 @@ function handleSizeChange(size: number) {
 }
 
 /** 状态标签 */
-function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' {
-  const map: Record<string, 'success' | 'danger' | 'warning' | 'info'> = {
+function statusType(status: string): 'success' | 'danger' | 'warning' | 'info' | 'primary' {
+  const map: Record<string, 'success' | 'danger' | 'warning' | 'info' | 'primary'> = {
     SUCCESS: 'success',
     FAILED: 'danger',
     PARTIAL: 'warning',
-    RUNNING: '' as 'info',
+    RUNNING: 'primary',
     PENDING: 'info',
   }
   return map[status] || 'info'
@@ -148,17 +153,65 @@ async function doTrigger(type: 'FULL' | 'INCREMENTAL') {
   const key: 'full' | 'incremental' = type === 'FULL' ? 'full' : 'incremental'
   triggerLoading.value[key] = true
   try {
-    if (type === 'FULL') {
-      await triggerFullSync(selectedSourceId.value)
-    } else {
-      await triggerIncrementalSync(selectedSourceId.value)
-    }
-    ElMessage.success(`${type === 'FULL' ? '全量' : '增量'}同步已触发，请稍后刷新查看结果`)
+    const res = type === 'FULL'
+      ? await triggerFullSync(selectedSourceId.value)
+      : await triggerIncrementalSync(selectedSourceId.value)
+    const taskId = res.taskId
+    ElMessage.success(`${type === 'FULL' ? '全量' : '增量'}同步已触发，任务ID: ${taskId}`)
     triggerDialogVisible.value = false
-    loadData()
+    // 将新任务插入列表顶部并开始轮询
+    const newTask: SyncTask = {
+      id: taskId,
+      taskName: `${sourceName(selectedSourceId.value!)}-${type}`,
+      sourceName: sourceName(selectedSourceId.value!),
+      taskType: type,
+      sourceId: selectedSourceId.value!,
+      status: 'RUNNING',
+      totalFiles: 0,
+      successFiles: 0,
+      failedFiles: 0,
+      skippedFiles: 0,
+      startedAt: new Date().toLocaleString('sv-SE'),
+      createdAt: new Date().toLocaleString('sv-SE'),
+      updatedAt: new Date().toLocaleString('sv-SE'),
+    }
+    tableData.value.unshift(newTask)
+    total.value++
+    startPolling(taskId)
   } finally {
     triggerLoading.value[key] = false
   }
+}
+
+/** 轮询任务进度，间隔 2 秒 */
+function startPolling(taskId: number) {
+  stopPolling()
+  pollingTaskId.value = taskId
+  pollingTimer.value = setInterval(async () => {
+    try {
+      const task = await getSyncTaskDetail(taskId)
+      // 更新列表中对应行
+      const idx = tableData.value.findIndex((t) => t.id === taskId)
+      if (idx !== -1) {
+        tableData.value[idx] = task
+      }
+      // 终端状态则停止轮询
+      if (['SUCCESS', 'FAILED', 'PARTIAL'].includes(task.status)) {
+        stopPolling()
+        loadData() // 刷新全列表以同步后端最终状态
+      }
+    } catch {
+      // 忽略轮询错误
+    }
+  }, 2000)
+}
+
+function stopPolling() {
+  if (pollingTimer.value) {
+    clearInterval(pollingTimer.value)
+    pollingTimer.value = null
+  }
+  pollingTaskId.value = null
 }
 
 function fileStatusText(status: string): string {
@@ -185,6 +238,24 @@ onMounted(() => {
   loadSources()
   loadData()
 })
+
+onUnmounted(() => {
+  stopPolling()
+})
+
+/** 清除所有分布式锁 */
+const clearLocksLoading = ref(false)
+async function handleClearLocks() {
+  clearLocksLoading.value = true
+  try {
+    const res = await deleteAllLocks()
+    ElMessage.success(res.message || '锁已清除')
+  } catch {
+    // 错误已在拦截器中处理
+  } finally {
+    clearLocksLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -229,6 +300,18 @@ onMounted(() => {
             <el-icon><VideoPlay /></el-icon>
             触发同步
           </el-button>
+          <el-popconfirm
+            title="确定要清除所有同步锁吗？"
+            confirm-button-text="确定"
+            cancel-button-text="取消"
+            @confirm="handleClearLocks"
+          >
+            <template #reference>
+              <el-button type="warning" :loading="clearLocksLoading">
+                清除所有锁
+              </el-button>
+            </template>
+          </el-popconfirm>
         </el-form-item>
       </el-form>
     </el-card>
@@ -238,9 +321,7 @@ onMounted(() => {
       <el-table :data="tableData" v-loading="loading" style="width: 100%">
         <el-table-column prop="id" label="ID" width="70" />
         <el-table-column prop="taskName" label="任务名称" min-width="160" show-overflow-tooltip />
-        <el-table-column label="存储源" width="140">
-          <template #default="{ row }">{{ sourceName(row.sourceId) }}</template>
-        </el-table-column>
+        <el-table-column prop="sourceName" label="存储源" width="140" show-overflow-tooltip />
         <el-table-column prop="taskType" label="类型" width="80">
           <template #default="{ row }">
             <el-tag :type="row.taskType === 'FULL' ? 'primary' : 'success'" size="small">
@@ -255,11 +336,24 @@ onMounted(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="进度" min-width="120">
+        <el-table-column label="进度" min-width="150">
           <template #default="{ row }">
-            <template v-if="row.totalFiles > 0">
+            <template v-if="row.status === 'RUNNING'">
               <el-progress
-                :percentage="Math.round((row.successFiles / row.totalFiles) * 100)"
+                :percentage="100"
+                :stroke-width="8"
+                :show-text="false"
+                :striped="true"
+                :striped-flow="true"
+                :duration="2"
+              />
+              <span class="progress-text running-text">
+                {{ row.successFiles + row.failedFiles }} 个文件已处理
+              </span>
+            </template>
+            <template v-else-if="row.totalFiles > 0">
+              <el-progress
+                :percentage="Math.round(((row.successFiles + row.failedFiles) / row.totalFiles) * 100)"
                 :stroke-width="8"
                 :show-text="false"
               />
@@ -399,6 +493,11 @@ onMounted(() => {
   margin-left: 8px;
   font-size: 12px;
   color: #666;
+}
+
+.running-text {
+  color: #409eff;
+  font-weight: 500;
 }
 
 .pagination-wrap {

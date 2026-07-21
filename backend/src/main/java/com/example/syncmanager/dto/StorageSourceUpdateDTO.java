@@ -12,5 +12,5 @@ public class StorageSourceUpdateDTO {
     private String bucket;
     private String region;
     private String prefixPath;
-    private Integer enabled;
+    private Boolean enabled;
 }

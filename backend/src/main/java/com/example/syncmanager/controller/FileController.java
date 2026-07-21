@@ -1,13 +1,23 @@
 package com.example.syncmanager.controller;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.example.syncmanager.common.BusinessException;
 import com.example.syncmanager.common.Result;
 import com.example.syncmanager.dto.FileBatchDownloadDTO;
 import com.example.syncmanager.dto.FileBrowseVO;
+import com.example.syncmanager.entity.SyncTaskFile;
+import com.example.syncmanager.entity.SysUser;
+import com.example.syncmanager.mapper.SyncTaskFileMapper;
+import com.example.syncmanager.entity.UserFileAccess;
+import com.example.syncmanager.mapper.SysUserMapper;
+import com.example.syncmanager.mapper.UserFileAccessMapper;
+import com.example.syncmanager.service.FileRecordService;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -20,6 +30,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -29,10 +40,16 @@ import java.util.zip.ZipOutputStream;
 @Slf4j
 @RestController
 @RequestMapping("/api/files")
+@RequiredArgsConstructor
 public class FileController {
 
     @Value("${sync.local.storage-path}")
     private String baseStoragePath;
+
+    private final SysUserMapper sysUserMapper;
+    private final UserFileAccessMapper userFileAccessMapper;
+    private final SyncTaskFileMapper syncTaskFileMapper;
+    private final FileRecordService fileRecordService;
 
     /** 允许的图片 MIME 类型 */
     private static final Set<String> ALLOWED_IMAGE_TYPES = Set.of(
@@ -50,11 +67,17 @@ public class FileController {
 
     /**
      * 浏览目录，返回文件/子目录列表
+     * 管理员：返回目录下所有文件
+     * 普通用户：只返回自己上传的文件 + 管理员授权的文件
      * @param path 相对路径（空或 / 表示根目录）
      */
     @GetMapping("/browse")
     public Result<List<FileBrowseVO>> browse(@RequestParam(required = false, defaultValue = "") String path) {
         validatePath(path);
+
+        // 获取当前用户
+        SysUser currentUser = getCurrentUser();
+        boolean isAdmin = "ADMIN".equals(currentUser.getRole());
 
         java.io.File dir = resolveDir(path);
         if (!dir.exists()) {
@@ -70,10 +93,37 @@ public class FileController {
         }
 
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
-        List<FileBrowseVO> result = Arrays.stream(files)
-                .filter(f -> !f.isHidden())
+        Stream<java.io.File> stream = Arrays.stream(files).filter(f -> !f.isHidden());
+
+        // 非管理员：按权限过滤
+        if (!isAdmin) {
+            Long userId = currentUser.getId();
+            String userUploadDir = "users/" + currentUser.getUsername() + "_file";
+            List<String> grantedPaths = userFileAccessMapper.selectList(
+                    new LambdaQueryWrapper<UserFileAccess>().eq(UserFileAccess::getUserId, userId)
+            ).stream().map(UserFileAccess::getFilePath).toList();
+
+            stream = stream.filter(f -> {
+                String relativePath = buildRelativePath(path, f.getName());
+                // 允许：用户自己的上传目录
+                if (relativePath.startsWith(userUploadDir + "/") || relativePath.equals(userUploadDir)
+                        || userUploadDir.startsWith(relativePath + "/") || relativePath.equals("users")) {
+                    return true;
+                }
+                // 允许：管理员授权的路径（精确匹配或子路径）
+                for (String granted : grantedPaths) {
+                    if (relativePath.equals(granted)
+                            || relativePath.startsWith(granted + "/")
+                            || granted.startsWith(relativePath + "/")) {
+                        return true;
+                    }
+                }
+                return false;
+            });
+        }
+
+        List<FileBrowseVO> result = stream
                 .sorted((a, b) -> {
-                    // 目录排前面
                     if (a.isDirectory() && !b.isDirectory()) return -1;
                     if (!a.isDirectory() && b.isDirectory()) return 1;
                     return a.getName().compareToIgnoreCase(b.getName());
@@ -81,10 +131,7 @@ public class FileController {
                 .map(f -> {
                     String ext = getExtension(f.getName());
                     boolean isImage = !f.isDirectory() && ALLOWED_IMAGE_EXTENSIONS.contains(ext);
-                    // 构建相对路径
-                    String relativePath = (path == null || path.isEmpty() || "/".equals(path))
-                            ? f.getName()
-                            : path + "/" + f.getName();
+                    String relativePath = buildRelativePath(path, f.getName());
                     return FileBrowseVO.builder()
                             .name(f.getName())
                             .path(relativePath)
@@ -171,20 +218,35 @@ public class FileController {
 
     // ==================== 上传 ====================
 
-    /** 上传图片文件（支持多文件） */
+    /** 上传图片文件（支持多文件）
+     * 管理员：可指定任意目录
+     * 普通用户：强制上传到自己的目录 users/{username}_file/，忽略 targetDir
+     */
     @PostMapping("/upload")
     public Result<List<String>> upload(
             @RequestParam(required = false, defaultValue = "") String targetDir,
             @RequestParam("files") List<MultipartFile> files) throws IOException {
 
-        validatePath(targetDir);
+        // 获取当前用户
+        SysUser currentUser = getCurrentUser();
+        boolean isAdmin = "ADMIN".equals(currentUser.getRole());
+
+        // 非管理员：强制上传到自己的目录，忽略请求中的 targetDir
+        String effectiveTargetDir;
+        if (!isAdmin) {
+            effectiveTargetDir = "users/" + currentUser.getUsername() + "_file";
+        } else {
+            effectiveTargetDir = targetDir;
+        }
+
+        validatePath(effectiveTargetDir);
 
         if (files == null || files.isEmpty()) {
             throw new BusinessException("请选择要上传的文件");
         }
 
         // 解析目标目录
-        java.io.File dir = resolveDir(targetDir);
+        java.io.File dir = resolveDir(effectiveTargetDir);
         if (!dir.exists()) {
             dir.mkdirs();
         }
@@ -203,10 +265,25 @@ public class FileController {
             }
             file.transferTo(destFile);
             // 构建相对路径
-            String relativePath = (targetDir == null || targetDir.isEmpty())
-                    ? fileName : targetDir + "/" + fileName;
+            String relativePath = (effectiveTargetDir == null || effectiveTargetDir.isEmpty())
+                    ? fileName : effectiveTargetDir + "/" + fileName;
             uploadedPaths.add(relativePath);
             log.info("文件上传成功: {}", destFile.getAbsolutePath());
+
+            // 上传去重：同一用户下不可重复上传同名文件
+            if (fileRecordService.existsByUserIdAndSourcePath(currentUser.getId(), relativePath)) {
+                throw new BusinessException("文件已存在：" + getFileName(relativePath));
+            }
+
+            // 记录上传文件到 sync_task_file
+            SyncTaskFile record = new SyncTaskFile();
+            record.setSourcePath(relativePath);
+            record.setTargetPath(destFile.getAbsolutePath());
+            record.setSourceSize(file.getSize());
+            record.setFileStatus("SUCCESS");
+            record.setFileOrigin("UPLOAD");
+            record.setUserId(currentUser.getId());
+            syncTaskFileMapper.insert(record);
         }
         return Result.success(uploadedPaths);
     }
@@ -278,6 +355,13 @@ public class FileController {
         return fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
     }
 
+    /** 从相对路径中提取文件名 */
+    private String getFileName(String relativePath) {
+        if (relativePath == null) return "";
+        int idx = relativePath.lastIndexOf('/');
+        return idx >= 0 ? relativePath.substring(idx + 1) : relativePath;
+    }
+
     /** 设置下载响应头 */
     private void setDownloadHeaders(HttpServletResponse response, String fileName, long fileSize) {
         String encodedName = URLEncoder.encode(fileName, StandardCharsets.UTF_8)
@@ -300,5 +384,25 @@ public class FileController {
             }
             os.flush();
         }
+    }
+
+    /** 从 SecurityContext 获取当前用户 */
+    private SysUser getCurrentUser() {
+        String username = SecurityContextHolder.getContext().getAuthentication().getName();
+        SysUser user = sysUserMapper.selectOne(
+                new LambdaQueryWrapper<SysUser>().eq(SysUser::getUsername, username)
+        );
+        if (user == null) {
+            throw new BusinessException("无法识别当前用户");
+        }
+        return user;
+    }
+
+    /** 构建文件/目录的相对路径 */
+    private String buildRelativePath(String parentPath, String name) {
+        if (parentPath == null || parentPath.isEmpty() || "/".equals(parentPath)) {
+            return name;
+        }
+        return parentPath + "/" + name;
     }
 }

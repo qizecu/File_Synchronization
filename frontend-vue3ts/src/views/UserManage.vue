@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, Refresh, Plus, Edit, Delete, Key } from '@element-plus/icons-vue'
+import { Search, Refresh, Plus, Edit, Delete, Key, FolderOpened } from '@element-plus/icons-vue'
 import { getUserList, createUser, updateUser, deleteUser, resetUserPassword } from '@/api/user'
-import type { SysUserVO, UserCreateDTO, UserUpdateDTO } from '@/types/api'
+import { listUserAccess, grantAccess, revokeAccess } from '@/api/file'
+import type { SysUserVO, UserCreateDTO, UserUpdateDTO, UserFileAccessVO } from '@/types/api'
 
 // ==================== 状态 ====================
 
@@ -153,13 +154,109 @@ async function handleDelete(row: SysUserVO) {
 
 // ==================== 重置密码 ====================
 
-async function handleResetPassword(row: SysUserVO) {
+const resetPwdVisible = ref(false)
+const resetPwdTarget = ref<SysUserVO | null>(null)
+const resetPwdLoading = ref(false)
+const resetPwdFormRef = ref<any>(null)
+
+const resetPwdForm = reactive({
+  newPassword: '',
+  confirmPassword: '',
+})
+
+const validateConfirmPassword = (_rule: any, value: string, callback: Function) => {
+  if (!value) {
+    callback(new Error('请再次输入新密码'))
+  } else if (value !== resetPwdForm.newPassword) {
+    callback(new Error('两次输入的密码不一致'))
+  } else {
+    callback()
+  }
+}
+
+const resetPwdRules = {
+  newPassword: [
+    { required: true, message: '请输入新密码', trigger: 'blur' },
+    { min: 8, max: 32, message: '密码长度为8-32位', trigger: 'blur' },
+    { pattern: /^(?=.*[a-zA-Z])(?=.*\d).+$/, message: '密码必须包含字母和数字', trigger: 'blur' },
+  ],
+  confirmPassword: [
+    { required: true, message: '请再次输入新密码', trigger: 'blur' },
+    { validator: validateConfirmPassword, trigger: 'blur' },
+  ],
+}
+
+function openResetPwdDialog(row: SysUserVO) {
+  resetPwdTarget.value = row
+  resetPwdForm.newPassword = ''
+  resetPwdForm.confirmPassword = ''
+  resetPwdVisible.value = true
+}
+
+async function handleResetPassword() {
+  const valid = await resetPwdFormRef.value?.validate().catch(() => false)
+  if (!valid || !resetPwdTarget.value) return
+
+  resetPwdLoading.value = true
   try {
-    await ElMessageBox.confirm(`确认重置用户 "${row.username}" 的密码为 123456？`, '提示', {
-      type: 'warning',
-    })
-    await resetUserPassword(row.id)
-    ElMessage.success('密码已重置为 123456')
+    await resetUserPassword(resetPwdTarget.value.id, { newPassword: resetPwdForm.newPassword })
+    ElMessage.success('密码重置成功')
+    resetPwdVisible.value = false
+    loadUsers()
+  } finally {
+    resetPwdLoading.value = false
+  }
+}
+
+// ==================== 文件权限管理 ====================
+
+const permDialogVisible = ref(false)
+const permDialogTarget = ref<SysUserVO | null>(null)
+const permList = ref<UserFileAccessVO[]>([])
+const permLoading = ref(false)
+const permGrantLoading = ref(false)
+const newPermPath = ref('')
+
+async function openPermDialog(row: SysUserVO) {
+  permDialogTarget.value = row
+  newPermPath.value = ''
+  permDialogVisible.value = true
+  permLoading.value = true
+  try {
+    permList.value = await listUserAccess(row.id)
+  } finally {
+    permLoading.value = false
+  }
+}
+
+async function handleAddPerm() {
+  if (!newPermPath.value.trim()) {
+    ElMessage.warning('请输入文件或目录路径')
+    return
+  }
+  if (!permDialogTarget.value) return
+
+  permGrantLoading.value = true
+  try {
+    await grantAccess({ userId: permDialogTarget.value.id, filePath: newPermPath.value.trim() })
+    ElMessage.success('授权成功')
+    newPermPath.value = ''
+    permList.value = await listUserAccess(permDialogTarget.value.id)
+  } finally {
+    permGrantLoading.value = false
+  }
+}
+
+async function handleRevokePerm(access: UserFileAccessVO) {
+  try {
+    await ElMessageBox.confirm(
+      `确认撤销对 "${access.filePath}" 的访问权限？`,
+      '撤销授权',
+      { type: 'warning' }
+    )
+    await revokeAccess(access.id)
+    ElMessage.success('已撤销授权')
+    permList.value = permList.value.filter((p) => p.id !== access.id)
   } catch {
     // 取消
   }
@@ -208,7 +305,7 @@ async function handleResetPassword(row: SysUserVO) {
         </template>
       </el-table-column>
       <el-table-column prop="createdAt" label="创建时间" width="180" />
-      <el-table-column label="操作" width="240" fixed="right">
+      <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
           <el-button type="primary" text size="small" :icon="Edit" @click="openEditDialog(row)">
             编辑
@@ -218,9 +315,18 @@ async function handleResetPassword(row: SysUserVO) {
             text
             size="small"
             :icon="Key"
-            @click="handleResetPassword(row)"
+            @click="openResetPwdDialog(row)"
           >
             重置密码
+          </el-button>
+          <el-button
+            type="info"
+            text
+            size="small"
+            :icon="FolderOpened"
+            @click="openPermDialog(row)"
+          >
+            文件权限
           </el-button>
           <el-button
             type="danger"
@@ -295,6 +401,77 @@ async function handleResetPassword(row: SysUserVO) {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 重置密码弹窗 -->
+    <el-dialog
+      v-model="resetPwdVisible"
+      title="重置密码"
+      width="480px"
+      :close-on-click-modal="false"
+    >
+      <el-form
+        ref="resetPwdFormRef"
+        :model="resetPwdForm"
+        :rules="resetPwdRules"
+        label-width="100px"
+      >
+        <el-form-item label="新密码" prop="newPassword">
+          <el-input
+            v-model="resetPwdForm.newPassword"
+            type="password"
+            placeholder="8-32位，需包含字母和数字"
+            show-password
+          />
+        </el-form-item>
+        <el-form-item label="确认密码" prop="confirmPassword">
+          <el-input
+            v-model="resetPwdForm.confirmPassword"
+            type="password"
+            placeholder="请再次输入新密码"
+            show-password
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="resetPwdVisible = false">取消</el-button>
+        <el-button type="primary" :loading="resetPwdLoading" @click="handleResetPassword">
+          确定
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 文件权限管理弹窗 -->
+    <el-dialog
+      v-model="permDialogVisible"
+      :title="`文件权限 - ${permDialogTarget?.username || ''}`"
+      width="700px"
+      :close-on-click-modal="false"
+    >
+      <!-- 添加授权 -->
+      <div class="perm-add-row">
+        <el-input
+          v-model="newPermPath"
+          placeholder="输入文件或目录路径，如 uploads/3/photo.jpg"
+          style="flex: 1; margin-right: 8px"
+          @keyup.enter="handleAddPerm"
+        />
+        <el-button type="primary" :loading="permGrantLoading" @click="handleAddPerm">
+          添加授权
+        </el-button>
+      </div>
+
+      <!-- 授权列表 -->
+      <el-table :data="permList" v-loading="permLoading" max-height="350" stripe style="margin-top: 12px">
+        <el-table-column prop="filePath" label="文件/目录路径" min-width="320" show-overflow-tooltip />
+        <el-table-column prop="createdAt" label="授权时间" width="180" />
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-button type="danger" text size="small" @click="handleRevokePerm(row)">撤销</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!permLoading && permList.length === 0" description="该用户暂无文件权限" />
+    </el-dialog>
   </div>
 </template>
 
@@ -326,5 +503,10 @@ async function handleResetPassword(row: SysUserVO) {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.perm-add-row {
+  display: flex;
+  align-items: center;
 }
 </style>

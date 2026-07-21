@@ -25,7 +25,7 @@ public class NotifyConfig {
     private String secret;
 
     /** 是否启用 */
-    private Integer enabled;
+    private Boolean enabled;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;

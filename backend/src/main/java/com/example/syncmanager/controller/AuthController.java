@@ -3,6 +3,7 @@ package com.example.syncmanager.controller;
 import com.example.syncmanager.common.BusinessException;
 import com.example.syncmanager.common.Result;
 import com.example.syncmanager.config.JwtUtil;
+import com.example.syncmanager.dto.ChangePasswordDTO;
 import com.example.syncmanager.dto.LoginDTO;
 import com.example.syncmanager.dto.LoginVO;
 import com.example.syncmanager.entity.SysUser;
@@ -14,6 +15,7 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -24,6 +26,7 @@ public class AuthController {
     private final AuthenticationManager authenticationManager;
     private final JwtUtil jwtUtil;
     private final SysUserMapper sysUserMapper;
+    private final PasswordEncoder passwordEncoder;
 
     /** 登录 */
     @PostMapping("/login")
@@ -76,6 +79,29 @@ public class AuthController {
     @PostMapping("/logout")
     public Result<Void> logout() {
         SecurityContextHolder.clearContext();
+        return Result.success();
+    }
+
+    /** 当前用户修改自己的密码 */
+    @PutMapping("/change-password")
+    public Result<Void> changePassword(@Valid @RequestBody ChangePasswordDTO dto) {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated()) {
+            throw new BusinessException(401, "未登录");
+        }
+        SysUser sysUser = sysUserMapper.selectOne(
+                new LambdaQueryWrapper<SysUser>().eq(SysUser::getUsername, auth.getName())
+        );
+        if (sysUser == null) {
+            throw new BusinessException(401, "用户不存在");
+        }
+        // 验证原密码
+        if (!passwordEncoder.matches(dto.getOldPassword(), sysUser.getPassword())) {
+            throw new BusinessException("原密码错误");
+        }
+        // 更新为新密码
+        sysUser.setPassword(passwordEncoder.encode(dto.getNewPassword()));
+        sysUserMapper.updateById(sysUser);
         return Result.success();
     }
 }

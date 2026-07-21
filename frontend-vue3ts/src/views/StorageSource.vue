@@ -153,12 +153,15 @@ async function handleToggleEnabled(row: StorageSource) {
 async function handleTestConnection(row: StorageSource) {
   testingId.value = row.id
   try {
-    const ok = await testConnection(row.id)
-    if (ok) {
+    const result = await testConnection(row.id)
+    if (result) {
       ElMessage.success('连接成功！')
     } else {
       ElMessage.error('连接失败，请检查配置')
     }
+  } catch (e: any) {
+    const msg = e?.message || e?.toString() || '连接测试失败'
+    ElMessage.error(msg)
   } finally {
     testingId.value = null
   }
@@ -184,7 +187,7 @@ onMounted(loadData)
         <el-table-column prop="sourceName" label="名称" min-width="140" />
         <el-table-column prop="sourceType" label="类型" width="90">
           <template #default="{ row }">
-            <el-tag :type="row.sourceType === 'MINIO' ? '' : 'success'" size="small">
+            <el-tag :type="row.sourceType === 'MINIO' ? 'primary' : 'success'" size="small">
               {{ row.sourceType }}
             </el-tag>
           </template>
@@ -196,7 +199,7 @@ onMounted(loadData)
           <template #default="{ row }">
             <el-switch
               :model-value="row.enabled"
-              @change="handleToggleEnabled(row)"
+              @change="handleToggleEnabled(row as StorageSource)"
               size="small"
             />
           </template>
@@ -204,17 +207,17 @@ onMounted(loadData)
         <el-table-column prop="createdAt" label="创建时间" width="170" />
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
-            <el-button type="primary" link size="small" @click="handleEdit(row)">编辑</el-button>
+            <el-button type="primary" link size="small" @click="handleEdit(row as StorageSource)">编辑</el-button>
             <el-button
               type="warning"
               link
               size="small"
               :loading="testingId === row.id"
-              @click="handleTestConnection(row)"
+              @click="handleTestConnection(row as StorageSource)"
             >
               测试连接
             </el-button>
-            <el-button type="danger" link size="small" @click="handleDelete(row)">删除</el-button>
+            <el-button type="danger" link size="small" @click="handleDelete(row as StorageSource)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -238,7 +241,7 @@ onMounted(loadData)
           </el-select>
         </el-form-item>
         <el-form-item label="端点地址" prop="endpoint">
-          <el-input v-model="formData.endpoint" placeholder="如 http://192.168.1.100:9000" />
+          <el-input v-model="formData.endpoint" placeholder="S3 API地址，如 http://192.168.1.100:9000（不是控制台9001端口）" />
         </el-form-item>
         <el-form-item label="AccessKey" prop="accessKey">
           <el-input v-model="formData.accessKey" placeholder="AccessKey" />
