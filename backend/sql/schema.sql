@@ -104,8 +104,10 @@ CREATE TABLE `sync_task_file` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='同步任务文件明细表';
 
 -- ============================================
--- 5. 通知配置表
+-- 5. 通知配置表（已废弃，手动执行 DROP 即可删除）
+-- -- DROP TABLE IF EXISTS `notify_config`;
 -- ============================================
+/*
 DROP TABLE IF EXISTS `notify_config`;
 CREATE TABLE `notify_config` (
     `id`          BIGINT       AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
@@ -118,10 +120,13 @@ CREATE TABLE `notify_config` (
     `updated_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     `is_deleted`  TINYINT(1)   NOT NULL DEFAULT 0    COMMENT '软删除'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知配置表';
+*/
 
 -- ============================================
--- 6. 通知日志表
+-- 6. 通知日志表（已废弃，手动执行 DROP 即可删除）
+-- -- DROP TABLE IF EXISTS `notify_log`;
 -- ============================================
+/*
 DROP TABLE IF EXISTS `notify_log`;
 CREATE TABLE `notify_log` (
     `id`               BIGINT      AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
@@ -136,6 +141,7 @@ CREATE TABLE `notify_log` (
     `is_deleted`       TINYINT(1)  NOT NULL DEFAULT 0   COMMENT '软删除',
     INDEX `idx_task_id` (`task_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知日志表';
+*/
 
 -- ============================================
 -- 7. 文件访问权限表

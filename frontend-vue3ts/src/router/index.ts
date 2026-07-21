@@ -44,12 +44,6 @@ const router = createRouter({
       meta: { title: '文件浏览', icon: 'FolderOpened' },
     },
     {
-      path: '/notify-configs',
-      name: 'NotifyConfig',
-      component: () => import('@/views/NotifyConfig.vue'),
-      meta: { title: '系统配置', icon: 'Setting' },
-    },
-    {
       path: '/users',
       name: 'UserManage',
       component: () => import('@/views/UserManage.vue'),

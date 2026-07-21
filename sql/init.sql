@@ -81,8 +81,10 @@ CREATE TABLE sync_task_file (
 ) ENGINE=InnoDB COMMENT='同步任务文件明细表';
 
 -- ============================================
--- 4. 通知配置表（钉钉 / 企微 webhook）
+-- 4. 通知配置表（已废弃，手动执行 DROP 即可删除）
+-- -- DROP TABLE IF EXISTS notify_config;
 -- ============================================
+/*
 CREATE TABLE notify_config (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
     config_name     VARCHAR(64)  NOT NULL COMMENT '配置名称',
@@ -94,10 +96,13 @@ CREATE TABLE notify_config (
     updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     is_deleted      TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '软删除'
 ) ENGINE=InnoDB COMMENT='通知配置表';
+*/
 
 -- ============================================
--- 5. 通知日志表
+-- 5. 通知日志表（已废弃，手动执行 DROP 即可删除）
+-- -- DROP TABLE IF EXISTS notify_log;
 -- ============================================
+/*
 CREATE TABLE notify_log (
     id               BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
     task_id          BIGINT       DEFAULT NULL COMMENT '关联同步任务ID',
@@ -111,6 +116,7 @@ CREATE TABLE notify_log (
     is_deleted       TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '软删除',
     INDEX idx_task_id (task_id)
 ) ENGINE=InnoDB COMMENT='通知日志表';
+*/
 
 -- ============================================
 -- 6. 系统用户表

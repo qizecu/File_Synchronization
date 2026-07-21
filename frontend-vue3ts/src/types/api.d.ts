@@ -115,27 +115,6 @@ export interface SyncTaskFileQuery {
   fileStatus?: string
 }
 
-/** 通知配置实体 */
-export interface NotifyConfig {
-  id: number
-  configName: string
-  notifyType: 'DINGTALK' | 'WECOM'
-  webhookUrl: string
-  secret?: string
-  enabled: boolean
-  createdAt: string
-  updatedAt: string
-}
-
-/** 通知配置创建参数 */
-export interface NotifyConfigCreateDTO {
-  configName: string
-  notifyType: 'DINGTALK' | 'WECOM'
-  webhookUrl: string
-  secret?: string
-  enabled?: boolean
-}
-
 /** 文件浏览条目 */
 export interface FileBrowseVO {
   name: string

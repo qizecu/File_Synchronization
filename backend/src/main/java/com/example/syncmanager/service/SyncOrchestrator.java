@@ -29,8 +29,6 @@ public class SyncOrchestrator {
     private final SyncTaskMapper taskMapper;
     private final SyncTaskFileMapper taskFileMapper;
     private final StorageSourceMapper sourceMapper;
-    private final NotifyConfigMapper notifyConfigMapper;
-    private final NotifyService notifyService;
     private final DistributedLockService lockService;
     private final SyncStatusCacheService statusCache;
     private final FileRecordService fileRecordService;
@@ -128,7 +126,6 @@ public class SyncOrchestrator {
     public void runAsync(SyncTask task, StorageSource source, String taskType, SyncTask lastTask, Long userId) {
         if (!lockService.tryLock(source.getId(), LOCK_WAIT_SECONDS, LOCK_LEASE_SECONDS)) {
             abortTask(task, "该存储源正在同步中，请稍后再试");
-            notify(task);
             return;
         }
         try {
@@ -136,7 +133,6 @@ public class SyncOrchestrator {
         } catch (Exception e) {
             log.error("{}同步异常: sourceId={}", taskType, source.getId(), e);
             abortTask(task, ErrorMsgTranslator.translate(e));
-            notify(task);
         } finally {
             lockService.unlock(source.getId());
         }
@@ -167,7 +163,6 @@ public class SyncOrchestrator {
             String diskStatus = checkDiskSpace();
             if ("STOP".equals(diskStatus)) {
                 abortTask(task, "磁盘空间超过 " + (stopThreshold * 100) + "% 阈值，同步停止");
-                notify(task);
                 return;
             }
 
@@ -216,7 +211,6 @@ public class SyncOrchestrator {
         }
 
         finishTask(task, syncedCount);
-        notify(task);
         log.info("同步结束: taskId={}, success={}, failed={}, skipped={}",
                 task.getId(), task.getSuccessFiles(), task.getFailedFiles(), task.getSkippedFiles());
     }
@@ -277,34 +271,11 @@ public class SyncOrchestrator {
         return "OK";
     }
 
-    // ========================= 通知（钉钉 / 企微 webhook） =========================
-
-    private void notify(SyncTask task) {
-        List<NotifyConfig> configs = notifyConfigMapper.selectList(
-                new LambdaQueryWrapper<NotifyConfig>().eq(NotifyConfig::getEnabled, 1));
-        if (configs.isEmpty()) return;
-
-        String msg = buildNotifyMessage(task);
-        for (NotifyConfig cfg : configs) {
-            notifyService.send(cfg, task.getId(), msg);
-        }
-    }
-
-    private String buildNotifyMessage(SyncTask task) {
-        return String.format("文件同步%s\n任务: %s\n总数: %d | 成功: %d | 失败: %d | 跳过: %d",
-                "SUCCESS".equals(task.getStatus()) ? "完成" : "异常终止",
-                task.getTaskName(),
-                nullToZero(task.getTotalFiles()),
-                nullToZero(task.getSuccessFiles()),
-                nullToZero(task.getFailedFiles()),
-                nullToZero(task.getSkippedFiles()));
-    }
+    // ========================= 辅助方法 =========================
 
     private static int nullToZero(Integer v) {
         return v == null ? 0 : v;
     }
-
-    // ========================= 辅助方法 =========================
 
     private StorageSource getEnabledSource(Long sourceId) {
         StorageSource source = sourceMapper.selectById(sourceId);

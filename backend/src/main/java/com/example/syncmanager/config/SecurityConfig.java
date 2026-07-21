@@ -34,7 +34,6 @@ public class SecurityConfig {
                     .requestMatchers("/api/auth/login").permitAll()
                     .requestMatchers("/api/storage-sources/**").hasRole("ADMIN")
                     .requestMatchers("/api/sync-tasks/**").hasRole("ADMIN")
-                    .requestMatchers("/api/notify-configs/**").hasRole("ADMIN")
                     .requestMatchers("/api/files/grant-access/**").hasRole("ADMIN")
                     .requestMatchers("/api/users/**").hasRole("ADMIN")
                     .anyRequest().authenticated()

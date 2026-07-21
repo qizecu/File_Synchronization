@@ -115,10 +115,6 @@ async function handleChangePassword() {
         </el-menu-item>
         <!-- 仅管理员可见 -->
         <template v-if="userStore.isAdmin">
-          <el-menu-item index="/notify-configs">
-            <el-icon><Setting /></el-icon>
-            <span>系统配置</span>
-          </el-menu-item>
           <el-menu-item index="/users">
             <el-icon><UserFilled /></el-icon>
             <span>用户管理</span>
